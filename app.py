@@ -11,6 +11,7 @@ class MonitoredSite:
     name: str
     url: str
     interval: int
+    paused: bool = False
 
 class UptimeMonitor:
     def __init__(self):
@@ -22,7 +23,10 @@ class UptimeMonitor:
             web.post('/add_site', self.handle_add_site),
             web.get('/status', self.handle_status),
             web.get('/status_updates', self.handle_status_updates),
-            web.get('/site_details/{url}', self.handle_site_details)
+            web.get('/site_details/{url}', self.handle_site_details),
+            web.post('/pause_site', self.handle_pause_site),
+            web.post('/delete_site', self.handle_delete_site),
+            web.post('/check_now', self.handle_check_now)
         ])
         self.monitor_task = None
 
@@ -30,12 +34,13 @@ class UptimeMonitor:
         while True:
             tasks = []
             for site in self.monitored_sites:
-                tasks.append(self.check_site(site))
+                if not site.paused:
+                    tasks.append(self.check_site(site))
             
             await asyncio.gather(*tasks)
             
             if self.monitored_sites:
-                shortest_interval = min(site.interval for site in self.monitored_sites)
+                shortest_interval = min(site.interval for site in self.monitored_sites if not site.paused)
                 await asyncio.sleep(shortest_interval)
             else:
                 await asyncio.sleep(10)
@@ -47,10 +52,15 @@ class UptimeMonitor:
                 async with session.get(site.url, timeout=10) as response:
                     response_time = round((time.time() - start_time) * 1000, 2)
                     status = 'up' if response.status == 200 else 'down'
-        except:
+        except Exception as e:
             response_time = 0
             status = 'down'
+            print(f"Error checking {site.url}: {str(e)}")
         
+        self.update_site_status(site, status, response_time)
+        return status
+
+    def update_site_status(self, site, status, response_time):
         if site.url not in self.status_data:
             self.status_data[site.url] = {
                 'name': site.name,
@@ -62,7 +72,8 @@ class UptimeMonitor:
                 'up_count': 0,
                 'down_count': 0,
                 'avg_response_time': 0,
-                'last_status': status
+                'last_status': status,
+                'paused': site.paused
             }
         
         record = self.status_data[site.url]
@@ -72,11 +83,9 @@ class UptimeMonitor:
             'response_time': response_time
         })
         
-        # Keep last 100 checks
         if len(record['history']) > 100:
             record['history'].pop(0)
         
-        # Update statistics
         record['total_checks'] += 1
         if status == 'up':
             record['up_count'] += 1
@@ -87,8 +96,8 @@ class UptimeMonitor:
         record['last_checked'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         record['response_time'] = response_time
         record['last_status'] = status
+        record['paused'] = site.paused
         
-        # Calculate average response time (only for successful requests)
         successful_responses = [r['response_time'] for r in record['history'] if r['status'] == 'up']
         record['avg_response_time'] = round(sum(successful_responses) / len(successful_responses), 2) if successful_responses else 0
 
@@ -101,6 +110,7 @@ class UptimeMonitor:
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Storm X Up</title>
             <style>
+                /* CSS remains the same as before */
                 :root {
                     --primary: #4361ee;
                     --secondary: #3a0ca3;
@@ -307,6 +317,16 @@ class UptimeMonitor:
                     color: white;
                 }
                 
+                .btn-danger {
+                    background-color: var(--danger);
+                    color: white;
+                }
+                
+                .btn-warning {
+                    background-color: var(--warning);
+                    color: white;
+                }
+                
                 .status-container {
                     margin-top: 30px;
                 }
@@ -344,6 +364,11 @@ class UptimeMonitor:
                     border-left-color: var(--warning);
                 }
                 
+                .status-card.paused {
+                    border-left-color: var(--gray);
+                    opacity: 0.7;
+                }
+                
                 .card-header {
                     display: flex;
                     justify-content: space-between;
@@ -379,6 +404,11 @@ class UptimeMonitor:
                     color: var(--warning);
                 }
                 
+                .status-badge.paused {
+                    background-color: rgba(108, 117, 125, 0.1);
+                    color: var(--gray);
+                }
+                
                 .card-stats {
                     display: grid;
                     grid-template-columns: repeat(2, 1fr);
@@ -401,6 +431,26 @@ class UptimeMonitor:
                     font-weight: 600;
                     font-size: 16px;
                     color: var(--text);
+                }
+                
+                .card-actions {
+                    display: flex;
+                    gap: 10px;
+                    margin-top: 15px;
+                }
+                
+                .action-btn {
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                    border: none;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 500;
+                    transition: opacity 0.3s;
+                }
+                
+                .action-btn:hover {
+                    opacity: 0.8;
                 }
                 
                 .theme-toggle {
@@ -515,6 +565,11 @@ class UptimeMonitor:
                     color: var(--danger);
                 }
                 
+                .status-cell.paused {
+                    background-color: rgba(108, 117, 125, 0.1);
+                    color: var(--gray);
+                }
+                
                 @media (max-width: 768px) {
                     .status-grid {
                         grid-template-columns: 1fr;
@@ -542,6 +597,28 @@ class UptimeMonitor:
                 .delay-1 { animation-delay: 0.1s; }
                 .delay-2 { animation-delay: 0.2s; }
                 .delay-3 { animation-delay: 0.3s; }
+                
+                .spinner {
+                    border: 3px solid rgba(0, 0, 0, 0.1);
+                    border-radius: 50%;
+                    border-top: 3px solid var(--primary);
+                    width: 20px;
+                    height: 20px;
+                    animation: spin 1s linear infinite;
+                    display: inline-block;
+                    vertical-align: middle;
+                    margin-right: 8px;
+                }
+                
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+                
+                .loading-text {
+                    display: inline-flex;
+                    align-items: center;
+                }
             </style>
         </head>
         <body>
@@ -553,13 +630,12 @@ class UptimeMonitor:
                 <div class="menu-bar">
                     <button class="menu-btn active" data-view="status">Status</button>
                     <button class="menu-btn" data-view="add">Add Monitor</button>
-                    <button class="menu-btn" data-view="settings">Settings</button>
                 </div>
                 
                 <div class="status-container" id="statusView">
                     <h2>Monitor Status</h2>
                     <div class="status-grid" id="statusGrid">
-                        <!-- Status cards will be added here dynamically -->
+                        <p class="no-monitors">No monitors added yet. Click the + button to add one.</p>
                     </div>
                 </div>
                 
@@ -588,7 +664,7 @@ class UptimeMonitor:
                             </div>
                             <div class="form-actions">
                                 <button type="button" class="btn btn-secondary" id="cancelAdd">Cancel</button>
-                                <button type="submit" class="btn btn-primary">Add Monitor</button>
+                                <button type="submit" class="btn btn-primary" id="submitAdd">Add Monitor</button>
                             </div>
                         </form>
                     </div>
@@ -623,7 +699,7 @@ class UptimeMonitor:
                         </div>
                         <div class="form-actions">
                             <button type="button" class="btn btn-secondary" id="modalCancel">Cancel</button>
-                            <button type="submit" class="btn btn-primary">Add Monitor</button>
+                            <button type="submit" class="btn btn-primary" id="modalSubmit">Add Monitor</button>
                         </div>
                     </form>
                 </div>
@@ -651,6 +727,8 @@ class UptimeMonitor:
                 const themeToggle = document.getElementById('themeToggle');
                 const detailsModal = document.getElementById('detailsModal');
                 const menuBtns = document.querySelectorAll('.menu-btn');
+                const addMonitorForm = document.getElementById('addMonitorForm');
+                const modalAddForm = document.getElementById('modalAddForm');
                 
                 // Theme management
                 themeToggle.addEventListener('click', () => {
@@ -696,16 +774,22 @@ class UptimeMonitor:
                     document.querySelector('.menu-btn[data-view="status"]').click();
                 });
                 
-                // Add monitor form
-                document.getElementById('modalAddForm').addEventListener('submit', async (e) => {
+                // Add monitor form (modal)
+                modalAddForm.addEventListener('submit', async (e) => {
                     e.preventDefault();
                     
                     const name = document.getElementById('modalMonitorName').value;
                     const url = document.getElementById('modalMonitorUrl').value;
                     const interval = document.getElementById('modalMonitorInterval').value;
                     
+                    const submitBtn = document.getElementById('modalSubmit');
+                    const originalText = submitBtn.textContent;
+                    submitBtn.innerHTML = '<span class="spinner"></span> Adding...';
+                    submitBtn.disabled = true;
+                    
                     try {
-                        const response = await fetch('/add_site', {
+                        // First add the site
+                        const addResponse = await fetch('/add_site', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
@@ -717,16 +801,88 @@ class UptimeMonitor:
                             }),
                         });
                         
-                        if (response.ok) {
-                            addModal.classList.remove('active');
-                            document.getElementById('modalAddForm').reset();
-                            fetchStatus();
+                        if (addResponse.ok) {
+                            // Immediately check the site
+                            const checkResponse = await fetch('/check_now', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({ url: url }),
+                            });
+                            
+                            if (checkResponse.ok) {
+                                addModal.classList.remove('active');
+                                modalAddForm.reset();
+                                fetchStatus();
+                            } else {
+                                alert('Monitor added but initial check failed');
+                            }
                         } else {
                             alert('Error adding monitor');
                         }
                     } catch (error) {
                         console.error('Error:', error);
                         alert('Error adding monitor');
+                    } finally {
+                        submitBtn.textContent = originalText;
+                        submitBtn.disabled = false;
+                    }
+                });
+                
+                // Add monitor form (page)
+                addMonitorForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    
+                    const name = document.getElementById('monitorName').value;
+                    const url = document.getElementById('monitorUrl').value;
+                    const interval = document.getElementById('monitorInterval').value;
+                    
+                    const submitBtn = document.getElementById('submitAdd');
+                    const originalText = submitBtn.textContent;
+                    submitBtn.innerHTML = '<span class="spinner"></span> Adding...';
+                    submitBtn.disabled = true;
+                    
+                    try {
+                        // First add the site
+                        const addResponse = await fetch('/add_site', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({
+                                name: name,
+                                url: url,
+                                interval: interval
+                            }),
+                        });
+                        
+                        if (addResponse.ok) {
+                            // Immediately check the site
+                            const checkResponse = await fetch('/check_now', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({ url: url }),
+                            });
+                            
+                            if (checkResponse.ok) {
+                                addMonitorForm.reset();
+                                document.querySelector('.menu-btn[data-view="status"]').click();
+                                fetchStatus();
+                            } else {
+                                alert('Monitor added but initial check failed');
+                            }
+                        } else {
+                            alert('Error adding monitor');
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                        alert('Error adding monitor');
+                    } finally {
+                        submitBtn.textContent = originalText;
+                        submitBtn.disabled = false;
                     }
                 });
                 
@@ -734,6 +890,74 @@ class UptimeMonitor:
                 document.getElementById('closeDetails').addEventListener('click', () => {
                     detailsModal.classList.remove('active');
                 });
+                
+                // Pause/resume site
+                async function togglePauseSite(url) {
+                    try {
+                        const response = await fetch('/pause_site', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ url: url }),
+                        });
+                        
+                        if (response.ok) {
+                            fetchStatus();
+                        } else {
+                            alert('Error toggling pause status');
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                        alert('Error toggling pause status');
+                    }
+                }
+                
+                // Delete site
+                async function deleteSite(url) {
+                    if (!confirm('Are you sure you want to delete this monitor?')) return;
+                    
+                    try {
+                        const response = await fetch('/delete_site', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ url: url }),
+                        });
+                        
+                        if (response.ok) {
+                            fetchStatus();
+                        } else {
+                            alert('Error deleting monitor');
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                        alert('Error deleting monitor');
+                    }
+                }
+                
+                // Check site now
+                async function checkSiteNow(url) {
+                    try {
+                        const response = await fetch('/check_now', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ url: url }),
+                        });
+                        
+                        if (response.ok) {
+                            fetchStatus();
+                        } else {
+                            alert('Error checking site');
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                        alert('Error checking site');
+                    }
+                }
                 
                 // Fetch and display status
                 async function fetchStatus() {
@@ -765,12 +989,15 @@ class UptimeMonitor:
                             avg_response_time: 0,
                             total_checks: 0,
                             up_count: 0,
-                            down_count: 0
+                            down_count: 0,
+                            paused: site.paused
                         };
                         
                         // Determine status class
                         let statusClass = statusInfo.last_status;
-                        if (statusInfo.last_status === 'up' && statusInfo.avg_response_time > 1000) {
+                        if (statusInfo.paused) {
+                            statusClass = 'paused';
+                        } else if (statusInfo.last_status === 'up' && statusInfo.avg_response_time > 1000) {
                             statusClass = 'warning';
                         }
                         
@@ -778,7 +1005,9 @@ class UptimeMonitor:
                             <div class="status-card ${statusClass} fade-in delay-${delay % 3}" data-url="${site.url}">
                                 <div class="card-header">
                                     <div class="site-name">${site.name}</div>
-                                    <div class="status-badge ${statusClass}">${statusClass.toUpperCase()}</div>
+                                    <div class="status-badge ${statusClass}">
+                                        ${statusInfo.paused ? 'PAUSED' : statusClass.toUpperCase()}
+                                    </div>
                                 </div>
                                 <div class="card-details">${site.url}</div>
                                 
@@ -800,6 +1029,15 @@ class UptimeMonitor:
                                         <span class="stat-value">${statusInfo.last_checked || 'Never'}</span>
                                     </div>
                                 </div>
+                                
+                                <div class="card-actions">
+                                    <button class="action-btn btn-primary" onclick="checkSiteNow('${site.url}')">Check Now</button>
+                                    <button class="action-btn ${statusInfo.paused ? 'btn-success' : 'btn-warning'}" 
+                                            onclick="togglePauseSite('${site.url}')">
+                                        ${statusInfo.paused ? 'Resume' : 'Pause'}
+                                    </button>
+                                    <button class="action-btn btn-danger" onclick="deleteSite('${site.url}')">Delete</button>
+                                </div>
                             </div>
                         `;
                         delay++;
@@ -809,7 +1047,10 @@ class UptimeMonitor:
                     
                     // Add click event to status cards
                     document.querySelectorAll('.status-card').forEach(card => {
-                        card.addEventListener('click', () => {
+                        card.addEventListener('click', (e) => {
+                            // Don't open details if clicking on a button
+                            if (e.target.tagName === 'BUTTON') return;
+                            
                             const url = card.dataset.url;
                             showSiteDetails(url);
                         });
@@ -832,7 +1073,9 @@ class UptimeMonitor:
                                 <div class="stat-item">
                                     <span class="stat-label">Current Status</span>
                                     <span class="stat-value">
-                                        <span class="status-badge ${data.last_status}">${data.last_status.toUpperCase()}</span>
+                                        <span class="status-badge ${data.paused ? 'paused' : data.last_status}">
+                                            ${data.paused ? 'PAUSED' : data.last_status.toUpperCase()}
+                                        </span>
                                     </span>
                                 </div>
                                 <div class="stat-item">
@@ -865,7 +1108,16 @@ class UptimeMonitor:
                                 </div>
                             </div>
                             
-                            <h3 style="margin-top: 30px;">Response Time History</h3>
+                            <div class="card-actions" style="margin: 20px 0;">
+                                <button class="btn btn-primary" onclick="checkSiteNow('${url}')">Check Now</button>
+                                <button class="btn ${data.paused ? 'btn-success' : 'btn-warning'}" 
+                                        onclick="togglePauseSite('${url}'); setTimeout(() => location.reload(), 500);">
+                                    ${data.paused ? 'Resume Monitoring' : 'Pause Monitoring'}
+                                </button>
+                                <button class="btn btn-danger" onclick="deleteSite('${url}'); setTimeout(() => location.reload(), 500);">Delete Monitor</button>
+                            </div>
+                            
+                            <h3>Response Time History</h3>
                             <div class="chart-container">
                                 <canvas id="responseChart"></canvas>
                             </div>
@@ -904,7 +1156,9 @@ class UptimeMonitor:
                 
                 // Initialize response time chart
                 function initializeChart(history) {
-                    const ctx = document.getElementById('responseChart').getContext('2d');
+                    const ctx = document.getElementById('responseChart')?.getContext('2d');
+                    if (!ctx) return;
+                    
                     const labels = history.map(item => item.time).reverse();
                     const data = history.map(item => item.response_time).reverse();
                     const statuses = history.map(item => item.status).reverse();
@@ -963,6 +1217,12 @@ class UptimeMonitor:
                 fetchStatus();
                 setupEventSource();
                 
+                // Make functions available globally
+                window.togglePauseSite = togglePauseSite;
+                window.deleteSite = deleteSite;
+                window.checkSiteNow = checkSiteNow;
+                window.showSiteDetails = showSiteDetails;
+                
                 // Load Chart.js
                 const script = document.createElement('script');
                 script.src = 'https://cdn.jsdelivr.net/npm/chart.js';
@@ -976,6 +1236,10 @@ class UptimeMonitor:
 
     async def handle_add_site(self, request):
         data = await request.json()
+        # Check if site already exists
+        if any(site.url == data['url'] for site in self.monitored_sites):
+            return web.json_response({'success': False, 'error': 'Site already exists'})
+        
         self.monitored_sites.append(MonitoredSite(
             name=data['name'],
             url=data['url'],
@@ -985,7 +1249,7 @@ class UptimeMonitor:
 
     async def handle_status(self, request):
         return web.json_response({
-            'sites': [{'name': s.name, 'url': s.url, 'interval': s.interval} for s in self.monitored_sites],
+            'sites': [{'name': s.name, 'url': s.url, 'interval': s.interval, 'paused': s.paused} for s in self.monitored_sites],
             'status_data': self.status_data
         })
 
@@ -1002,12 +1266,12 @@ class UptimeMonitor:
         try:
             while True:
                 data = {
-                    'sites': [{'name': s.name, 'url': s.url, 'interval': s.interval} for s in self.monitored_sites],
+                    'sites': [{'name': s.name, 'url': s.url, 'interval': s.interval, 'paused': s.paused} for s in self.monitored_sites],
                     'status_data': self.status_data
                 }
                 message = f"data: {json.dumps(data)}\n\n"
                 await response.write(message.encode('utf-8'))
-                await asyncio.sleep(5)  # Send updates every 5 seconds
+                await asyncio.sleep(5)
         except (asyncio.CancelledError, ConnectionResetError):
             pass
         
@@ -1026,29 +1290,57 @@ class UptimeMonitor:
             'up_count': details.get('up_count', 0),
             'down_count': details.get('down_count', 0),
             'last_checked': details.get('last_checked', 'Never'),
-            'history': details.get('history', [])
+            'history': details.get('history', []),
+            'paused': next((site.paused for site in self.monitored_sites if site.url == url), False)
         })
+
+    async def handle_pause_site(self, request):
+        data = await request.json()
+        url = data['url']
+        
+        for site in self.monitored_sites:
+            if site.url == url:
+                site.paused = not site.paused
+                if url in self.status_data:
+                    self.status_data[url]['paused'] = site.paused
+                return web.json_response({'success': True, 'paused': site.paused})
+        
+        return web.json_response({'success': False, 'error': 'Site not found'})
+
+    async def handle_delete_site(self, request):
+        data = await request.json()
+        url = data['url']
+        
+        self.monitored_sites = [site for site in self.monitored_sites if site.url != url]
+        if url in self.status_data:
+            del self.status_data[url]
+        
+        return web.json_response({'success': True})
+
+    async def handle_check_now(self, request):
+        data = await request.json()
+        url = data['url']
+        
+        site = next((site for site in self.monitored_sites if site.url == url), None)
+        if site:
+            status = await self.check_site(site)
+            return web.json_response({'success': True, 'status': status})
+        
+        return web.json_response({'success': False, 'error': 'Site not found'})
 
     async def start(self):
         runner = web.AppRunner(self.app)
         await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        site = web.TCPSite(runner, '0.0.0.0', 5000)
         self.monitor_task = asyncio.create_task(self.monitor_sites())
         await site.start()
-        print("Server started at http://0.0.0.0:8080")
-
-async def start(self):
-    runner = web.AppRunner(self.app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 5000)  # Changed to port 5000
-    self.monitor_task = asyncio.create_task(self.monitor_sites())
-    await site.start()
-    print("Server started at http://0.0.0.0:5000")
+        print("Server started at http://0.0.0.0:5000")
 
 if __name__ == '__main__':
     try:
-        # This is the aiohttp equivalent of app.run()
         monitor = UptimeMonitor()
-        web.run_app(monitor.app, port=5000)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(monitor.start())
+        loop.run_forever()
     except KeyboardInterrupt:
         print("Server stopped")
