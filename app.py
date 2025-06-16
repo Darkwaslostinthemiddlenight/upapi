@@ -1037,12 +1037,18 @@ class UptimeMonitor:
         await site.start()
         print("Server started at http://0.0.0.0:8080")
 
-async def main():
-    monitor = UptimeMonitor()
-    await monitor.start()
+async def start(self):
+    runner = web.AppRunner(self.app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 5000)  # Changed to port 5000
+    self.monitor_task = asyncio.create_task(self.monitor_sites())
+    await site.start()
+    print("Server started at http://0.0.0.0:5000")
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        # This is the aiohttp equivalent of app.run()
+        monitor = UptimeMonitor()
+        web.run_app(monitor.app, port=5000)
     except KeyboardInterrupt:
         print("Server stopped")
