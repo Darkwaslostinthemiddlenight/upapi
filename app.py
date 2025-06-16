@@ -33,7 +33,7 @@ def ping_urls():
                 print(f"[✓] Pinged {url}")
             except Exception as e:
                 print(f"[x] Failed to ping {url} - {str(e)}")
-        time.sleep(300)  # Wait 5 mins
+        time.sleep(30)  # Wait 5 mins
 
 # Start thread
 threading.Thread(target=ping_urls, daemon=True).start()
